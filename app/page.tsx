@@ -47,8 +47,12 @@ export default function Home() {
 
       <section className="about section" id="about">
         <div className="aboutImages">
-          <img className="aboutPrimary" src="/media/about-2.webp" alt="Gabytron production portrait" />
-          <img className="aboutSecondary" src="/media/about-1.webp" alt="Behind the scenes with Gabytron Productions" />
+          <div className="aboutImageFrame aboutPrimaryFrame">
+            <img className="aboutPrimary" src="/media/about-2.webp" alt="Gabytron production portrait" />
+          </div>
+          <div className="aboutImageFrame aboutSecondaryFrame">
+            <img className="aboutSecondary" src="/media/about-1.webp" alt="Behind the scenes with Gabytron Productions" />
+          </div>
           <span className="roundel">PHOTO + FILM<br />KUALA LUMPUR</span>
         </div>
         <div className="aboutCopy">

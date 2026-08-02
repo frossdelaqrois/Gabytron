@@ -4,11 +4,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 const STORAGE_KEY = "gabytron-photo-replacements-v1";
 const LAYOUT_STORAGE_KEY = "gabytron-photo-layouts-v1";
+const TEXT_STORAGE_KEY = "gabytron-text-content-v1";
 const UPLOAD_DB = "gabytron-photo-editor";
 const UPLOAD_STORE = "uploads";
 
 type ReplacementMap = Record<string, string>;
-type EditorKind = "photo" | "background" | "text" | "section" | "header";
+type TextMap = Record<string, string>;
+type EditorKind = "photo" | "background" | "text" | "section" | "header" | "box";
 type PhotoLayout = { x: number; y: number; scale: number; paddingTop?: number; paddingBottom?: number; height?: number };
 type LayoutMap = Record<string, PhotoLayout>;
 type StoredUpload = { id: string; name: string; type: string; blob: Blob };
@@ -31,6 +33,40 @@ function readLayouts(): LayoutMap {
   } catch {
     return {};
   }
+}
+
+function readTexts(): TextMap {
+  try {
+    return JSON.parse(window.localStorage.getItem(TEXT_STORAGE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function cleanEditableHtml(element: HTMLElement) {
+  const allowed = new Set(["BR", "SPAN", "EM", "STRONG"]);
+  const container = document.createElement("div");
+  const appendClean = (source: Node, destination: Node) => {
+    if (source.nodeType === Node.TEXT_NODE) {
+      destination.appendChild(document.createTextNode(source.textContent || ""));
+      return;
+    }
+    if (!(source instanceof HTMLElement)) return;
+    if (source.tagName === "DIV" || source.tagName === "P") {
+      if (destination.hasChildNodes()) destination.appendChild(document.createElement("br"));
+      source.childNodes.forEach((child) => appendClean(child, destination));
+      return;
+    }
+    if (allowed.has(source.tagName)) {
+      const clean = document.createElement(source.tagName.toLowerCase());
+      source.childNodes.forEach((child) => appendClean(child, clean));
+      destination.appendChild(clean);
+      return;
+    }
+    source.childNodes.forEach((child) => appendClean(child, destination));
+  };
+  element.childNodes.forEach((child) => appendClean(child, container));
+  return container.innerHTML.trim();
 }
 
 function clampLayout(layout: PhotoLayout): PhotoLayout {
@@ -186,13 +222,17 @@ function isEditableText(element: Element) {
   return text;
 }
 
-function prepareLayoutTarget(element: HTMLElement, kind: "text" | "section" | "header") {
+function prepareLayoutTarget(element: HTMLElement, kind: "text" | "section" | "header" | "box") {
   if (!element.dataset.photoEditorKey) {
-    const selector = kind === "text" ? "h1,h2,h3,p" : kind === "header" ? ".hero,.galleryHero" : "main section:not(.hero):not(.galleryHero)";
+    const selector = kind === "text" ? "h1,h2,h3,p" : kind === "header" ? ".hero,.galleryHero" : kind === "box" ? ".serviceCard,.aboutImageFrame" : "main section:not(.hero):not(.galleryHero)";
     const targets = Array.from(document.querySelectorAll<HTMLElement>(selector)).filter((target) => !target.closest("[data-photo-editor-ui],nav,footer"));
     element.dataset.photoEditorKey = `${window.location.pathname}::${kind}-${targets.indexOf(element)}::${element.tagName.toLowerCase()}`;
   }
   element.dataset.photoEditorKind = kind;
+  if (kind === "text" && !element.isContentEditable) {
+    const savedText = readTexts()[element.dataset.photoEditorKey];
+    if (savedText !== undefined && element.innerHTML !== savedText) element.innerHTML = savedText;
+  }
   const saved = readLayouts()[element.dataset.photoEditorKey];
   if (saved) applyLayout(element, clampLayout(saved));
 }
@@ -206,6 +246,7 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
   const [selectedKey, setSelectedKey] = useState("");
   const [selectedKind, setSelectedKind] = useState<EditorKind>("photo");
   const [selectedLayout, setSelectedLayout] = useState<PhotoLayout>(DEFAULT_LAYOUT);
+  const [editingText, setEditingText] = useState(false);
   const [notice, setNotice] = useState("");
   const [uploads, setUploads] = useState<UploadAsset[]>([]);
   const targetRef = useRef<HTMLImageElement | null>(null);
@@ -242,6 +283,7 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
       });
       document.querySelectorAll<HTMLElement>("main section:not(.hero):not(.galleryHero)").forEach((element) => prepareLayoutTarget(element, "section"));
       document.querySelectorAll<HTMLElement>(".hero,.galleryHero").forEach((element) => prepareLayoutTarget(element, "header"));
+      document.querySelectorAll<HTMLElement>(".serviceCard,.aboutImageFrame").forEach((element) => prepareLayoutTarget(element, "box"));
     };
 
     applySavedPhotos();
@@ -275,10 +317,14 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
       image: HTMLImageElement | null,
       background: HTMLElement | null,
       layoutElement: HTMLElement | null = null,
-      layoutKind: "text" | "section" | "header" | null = null,
+      layoutKind: "text" | "section" | "header" | "box" | null = null,
     ) => {
       const replacements = readReplacements();
       document.querySelectorAll<HTMLElement>("[data-photo-editor-selected]").forEach((element) => delete element.dataset.photoEditorSelected);
+      document.querySelectorAll<HTMLElement>("[contenteditable='true'][data-photo-editor-kind='text']").forEach((element) => {
+        element.contentEditable = "false";
+      });
+      setEditingText(false);
       if (image && isEditablePhoto(image)) {
         preparePhoto(image, replacements, localUrlsRef.current);
         targetRef.current = image;
@@ -350,22 +396,26 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
       if (event.button !== 0) return;
       const clickedElement = event.target instanceof Element ? event.target : null;
       if (!clickedElement || clickedElement.closest("[data-photo-editor-ui]")) return;
-      const sectionOverride = event.shiftKey ? clickedElement.closest<HTMLElement>("main section") : null;
-      const image = !sectionOverride && event.target instanceof HTMLImageElement && isEditablePhoto(event.target) ? event.target : null;
-      const text = !image && !sectionOverride ? isEditableText(clickedElement) : null;
-      const background = !sectionOverride && !image && !text && !clickedElement.closest("a,button,input,select,textarea")
+      const selectedBox = clickedElement.closest<HTMLElement>(".serviceCard[data-photo-editor-selected],.aboutImageFrame[data-photo-editor-selected]");
+      const textCandidate = selectedBox ? null : isEditableText(clickedElement);
+      if (textCandidate?.isContentEditable) return;
+      const headerTarget = !selectedBox && !textCandidate ? clickedElement.closest<HTMLElement>(".hero,.galleryHero") : null;
+      const sectionOverride = event.shiftKey ? clickedElement.closest<HTMLElement>("main section") : headerTarget;
+      const image = !selectedBox && !sectionOverride && event.target instanceof HTMLImageElement && isEditablePhoto(event.target) ? event.target : null;
+      const text = !image && !sectionOverride ? textCandidate : null;
+      const background = !selectedBox && !sectionOverride && !image && !text && !clickedElement.closest("a,button,input,select,textarea")
         ? clickedElement.closest<HTMLElement>("[data-photo-editor-background]")
         : null;
-      const section = sectionOverride || (!image && !text && !background && !clickedElement.closest("a,button,input,select,textarea")
+      const section = !selectedBox && (sectionOverride || (!image && !text && !background && !clickedElement.closest("a,button,input,select,textarea")
         ? clickedElement.closest<HTMLElement>("main section")
-        : null);
-      if (!image && !text && !background && !section) return;
+        : null));
+      if (!image && !text && !background && !section && !selectedBox) return;
       event.preventDefault();
       const selected = selectTarget(
         image,
         background,
-        text || section,
-        text ? "text" : section?.matches(".hero,.galleryHero") ? "header" : section ? "section" : null,
+        selectedBox || text || section,
+        selectedBox ? "box" : text ? "text" : section?.matches(".hero,.galleryHero") ? "header" : section ? "section" : null,
       );
       if (!selected?.key) return;
       if (section) return;
@@ -461,6 +511,68 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
     setNotice(selectedKind === "section" ? "Original section spacing restored." : selectedKind === "header" ? "Original header height restored." : "Original size and position restored.");
   };
 
+  const beginTextEditing = () => {
+    const target = layoutTargetRef.current;
+    if (!target || selectedKind !== "text") return;
+    target.contentEditable = "true";
+    target.spellcheck = true;
+    target.focus();
+    setEditingText(true);
+    setNotice("Type directly in the selected text, then choose Save selected.");
+  };
+
+  const saveSelectedChanges = () => {
+    const target = layoutTargetRef.current;
+    if (!target || !selectedKey) return;
+    const layouts = readLayouts();
+    layouts[selectedKey] = layoutForElement(target);
+    window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layouts));
+
+    if (selectedKind === "text") {
+      const texts = readTexts();
+      const cleanText = cleanEditableHtml(target);
+      texts[selectedKey] = cleanText;
+      window.localStorage.setItem(TEXT_STORAGE_KEY, JSON.stringify(texts));
+      target.innerHTML = cleanText;
+      target.contentEditable = "false";
+      setEditingText(false);
+    }
+    setNotice("Selected changes saved on this computer.");
+  };
+
+  const selectRelatedBox = () => {
+    const box = layoutTargetRef.current?.closest<HTMLElement>(".serviceCard,.aboutImageFrame");
+    if (!box) return;
+    prepareLayoutTarget(box, "box");
+    document.querySelectorAll<HTMLElement>("[data-photo-editor-selected]").forEach((element) => delete element.dataset.photoEditorSelected);
+    box.dataset.photoEditorSelected = "true";
+    targetRef.current = null;
+    backgroundTargetRef.current = null;
+    layoutTargetRef.current = box;
+    const key = box.dataset.photoEditorKey || "";
+    setSelectedKey(key);
+    setSelectedKind("box");
+    setSelectedLayout(readLayouts()[key] ? layoutFor(key) : layoutForElement(box));
+    setNotice("Box selected. Resize or move the whole service card.");
+  };
+
+  const selectPhotoInsideBox = () => {
+    const box = layoutTargetRef.current;
+    const image = box?.querySelector<HTMLImageElement>("img") || null;
+    if (!image || !isEditablePhoto(image)) return;
+    preparePhoto(image, readReplacements(), localUrlsRef.current);
+    document.querySelectorAll<HTMLElement>("[data-photo-editor-selected]").forEach((element) => delete element.dataset.photoEditorSelected);
+    image.dataset.photoEditorSelected = "true";
+    targetRef.current = image;
+    backgroundTargetRef.current = null;
+    layoutTargetRef.current = image;
+    const key = image.dataset.photoEditorKey || "";
+    setSelectedKey(key);
+    setSelectedKind("photo");
+    setSelectedLayout(layoutFor(key));
+    setNotice("Photo selected. Resize it independently inside the box.");
+  };
+
   const choosePhoto = (asset: EditorAsset) => {
     const target = targetRef.current;
     const background = backgroundTargetRef.current;
@@ -522,6 +634,10 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
               targetRef.current = null;
               backgroundTargetRef.current = null;
               layoutTargetRef.current = null;
+              document.querySelectorAll<HTMLElement>("[contenteditable='true'][data-photo-editor-kind='text']").forEach((element) => {
+                element.contentEditable = "false";
+              });
+              setEditingText(false);
               document.querySelectorAll<HTMLElement>("[data-photo-editor-selected]").forEach((element) => delete element.dataset.photoEditorSelected);
             }
             return !value;
@@ -533,7 +649,7 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
         <span>{enabled ? "●" : "○"}</span> Visual editor {enabled ? "on" : "off"}
       </button>
 
-      {enabled && <p className="photoEditorHint">Drag photos or text · Shift-click a section or header for sizing</p>}
+      {enabled && <p className="photoEditorHint">Click a header to resize · drag photos or text · Shift-click other sections</p>}
 
       {enabled && selectedKey && !open && (
         <aside className={`photoLayoutBar ${selectedKind === "section" || selectedKind === "header" ? "sectionControls" : ""}`} aria-label="Selected item layout controls">
@@ -580,7 +696,11 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
               </label>
             </div>
           )}
+          {selectedKind === "text" && <button type="button" className="photoLayoutChange" onClick={beginTextEditing}>{editingText ? "Editing text…" : "Edit text"}</button>}
+          {selectedKind === "photo" && targetRef.current?.closest(".serviceCard,.aboutImageFrame") && <button type="button" className="photoLayoutChange" onClick={selectRelatedBox}>Resize box</button>}
+          {selectedKind === "box" && <button type="button" className="photoLayoutChange" onClick={selectPhotoInsideBox}>Resize photo</button>}
           {(selectedKind === "photo" || selectedKind === "background") && <button type="button" className="photoLayoutChange" onClick={() => setOpen(true)}>Change photo</button>}
+          <button type="button" className="photoLayoutSave" onClick={saveSelectedChanges}>Save selected</button>
           <button type="button" className="photoLayoutReset" onClick={resetSelectedLayout}>Reset layout</button>
         </aside>
       )}
