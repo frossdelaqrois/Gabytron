@@ -199,7 +199,32 @@ footer { display:flex; align-items:center; justify-content:space-between; gap:24
 .photoEditorGrid span { position:absolute; inset:auto 4px 4px; padding:4px 5px; color:var(--paper); background:#11131ad9; font-size:.52rem; font-weight:800; text-align:left; text-transform:uppercase; }
 body:has(.photoEditorToggle.active) img:not(.photoEditorGrid img):not(.originalBrand img) { cursor:context-menu; }
 body:has(.photoEditorToggle.active) [data-photo-editor-background] { cursor:context-menu; }
+img[data-photo-editor-layout] { translate:var(--photo-editor-x,0) var(--photo-editor-y,0); scale:var(--photo-editor-scale,1); transform-origin:center; }
+[data-photo-editor-kind="text"][data-photo-editor-layout] { translate:var(--photo-editor-x,0) var(--photo-editor-y,0); scale:var(--photo-editor-scale,1); transform-origin:center; }
+.galleryHero[data-photo-editor-layout] .galleryHeroImage { transform:translate3d(var(--photo-editor-x,0),var(--photo-editor-y,0),0) scale(var(--photo-editor-scale,1)); transform-origin:center; }
+body:has(.photoEditorToggle.active) [data-photo-editor-kind="photo"],body:has(.photoEditorToggle.active) [data-photo-editor-kind="text"] { cursor:grab; }
+body:has(.photoEditorToggle.active) [data-photo-editor-kind="section"],body:has(.photoEditorToggle.active) [data-photo-editor-kind="header"] { cursor:crosshair; }
+body:has(.photoEditorToggle.active) [data-photo-editor-selected] { outline:4px solid var(--orange); outline-offset:-4px; }
+body.photoEditorDragging,body.photoEditorDragging * { cursor:grabbing!important; user-select:none!important; }
+.photoLayoutBar { position:fixed; z-index:1050; left:18px; bottom:18px; display:grid; grid-template-columns:auto auto minmax(150px,240px) auto auto; align-items:center; gap:12px; width:min(890px,calc(100vw - 250px)); padding:12px; color:var(--paper); background:#11131af2; border:2px solid var(--paper); box-shadow:7px 7px 0 var(--blue); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }
+.photoLayoutHeading { display:grid; min-width:115px; gap:3px; }
+.photoLayoutHeading span,.photoLayoutScale span { color:var(--orange); font-size:.56rem; font-weight:850; letter-spacing:.1em; text-transform:uppercase; }
+.photoLayoutHeading strong { font-size:.7rem; letter-spacing:.04em; text-transform:uppercase; }
+.photoLayoutNudge { display:grid; grid-template-columns:repeat(4,32px); gap:4px; }
+.photoLayoutNudge button { width:32px; height:32px; padding:0; border:1px solid var(--paper); color:var(--paper); background:transparent; font-size:1rem; cursor:pointer; }
+.photoLayoutNudge button:hover,.photoLayoutNudge button:focus-visible { color:var(--ink); background:var(--orange); }
+.photoLayoutScale { display:grid; grid-template-columns:auto minmax(90px,1fr); align-items:center; gap:9px; }
+.photoLayoutScale input { width:100%; accent-color:var(--orange); cursor:ew-resize; }
+.photoLayoutChange,.photoLayoutReset { min-height:34px; padding:8px 11px; border:1px solid var(--paper); color:var(--paper); background:transparent; font-size:.58rem; font-weight:850; letter-spacing:.05em; text-transform:uppercase; cursor:pointer; }
+.photoLayoutChange { color:var(--ink); background:var(--orange); border-color:var(--orange); }
+.photoLayoutReset:hover,.photoLayoutReset:focus-visible { color:var(--ink); background:var(--paper); }
+.photoLayoutBar.sectionControls { grid-template-columns:auto minmax(320px,1fr) auto; }
+.sectionSpacingControls { display:grid; grid-template-columns:repeat(2,minmax(150px,1fr)); gap:14px; }
+.sectionSpacingControls label { display:grid; gap:4px; }
+.sectionSpacingControls span { color:var(--orange); font-size:.56rem; font-weight:850; letter-spacing:.06em; text-transform:uppercase; }
+.sectionSpacingControls input { width:100%; accent-color:var(--orange); cursor:ew-resize; }
+.sectionSpacingControls.headerHeightControl { grid-template-columns:1fr; }
 
 @media (max-width:760px) {
-  .photoEditorBackdrop{padding:8px}.photoEditorPanel{max-height:96vh;padding:18px;box-shadow:7px 7px 0 var(--blue)}.photoEditorTools{grid-template-columns:1fr}.photoEditorGrid{grid-template-columns:repeat(3,minmax(0,1fr))}.photoEditorPanel h2{font-size:3.2rem}.photoEditorHint{display:none}
+  .photoEditorBackdrop{padding:8px}.photoEditorPanel{max-height:96vh;padding:18px;box-shadow:7px 7px 0 var(--blue)}.photoEditorTools{grid-template-columns:1fr}.photoEditorGrid{grid-template-columns:repeat(3,minmax(0,1fr))}.photoEditorPanel h2{font-size:3.2rem}.photoEditorHint{display:none}.photoLayoutBar,.photoLayoutBar.sectionControls{left:8px;right:8px;bottom:72px;width:auto;grid-template-columns:1fr auto}.photoLayoutHeading{grid-column:1}.photoLayoutNudge{grid-column:2;grid-row:1}.photoLayoutScale,.sectionSpacingControls{grid-column:1/-1}.sectionSpacingControls{grid-template-columns:1fr}.photoLayoutChange,.photoLayoutReset{width:100%}
 }
