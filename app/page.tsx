@@ -1,31 +1,33 @@
-const services = [
-  { title: "Campaigns", image: "/media/campaign.webp", tag: "Brand / Editorial" },
-  { title: "Lookbook", image: "/media/lookbook.webp", tag: "Seasonal / Fashion" },
-  { title: "Corporate Branding", image: "/media/corp.webp", tag: "People / Business" },
-  { title: "Product Shoot", image: "/media/product.webp", tag: "Studio / Detail" },
-  { title: "Portraiture", image: "/media/portrait.webp", tag: "Character / Story" },
-  { title: "e-Commerce", image: "/media/ecomm.webp", tag: "Catalog / Conversion" },
-  { title: "Event", image: "/media/event.webp", tag: "Live / Documentary" },
-  { title: "Photo Restoration", image: "/media/restore.webp", tag: "Archive / Revival" },
-  { title: "Drone Services", image: "/media/drone.webp", tag: "Aerial / Motion" },
+import { services } from "./services-data";
+import { SiteHeader } from "./components/SiteHeader";
+
+const reelImages = [
+  { src: "/galleries/campaigns/image-001.webp", href: "/services/campaigns", alt: "Campaign photography" },
+  { src: "/galleries/portraits/image-014.webp", href: "/services/portraits", alt: "Portrait photography" },
+  { src: "/galleries/products/image-006.webp", href: "/services/products", alt: "Product photography" },
+  { src: "/galleries/lookbook/image-009.webp", href: "/services/lookbook", alt: "Lookbook photography" },
+  { src: "/galleries/events/image-012.webp", href: "/services/events", alt: "Event photography" },
+  { src: "/galleries/ecommerce/image-008.webp", href: "/services/ecommerce", alt: "E-commerce photography" },
+  { src: "/galleries/corporate/image-004.webp", href: "/services/corporate", alt: "Corporate photography" },
+  { src: "/galleries/campaigns/image-032.webp", href: "/services/campaigns", alt: "Fashion campaign photography" },
 ];
 
 export default function Home() {
   return (
     <main id="top">
-      <header className="siteHeader">
-        <a className="brand" href="#top" aria-label="Gabytron Productions home">
-          GABYTRON<span>●</span>
-        </a>
-        <nav aria-label="Main navigation">
-          <a href="#about">About</a>
-          <a href="#services">Services</a>
-          <a className="navCta" href="#contact">Let&apos;s create ↗</a>
-        </nav>
-      </header>
+      <SiteHeader onHomePage />
 
       <section className="hero" aria-labelledby="hero-title">
-        <div className="heroImage" aria-hidden="true" />
+        <div className="heroReel" aria-hidden="true">
+          <div className="heroReelTrack">
+            <div className="heroReelSet">
+              {reelImages.map((image) => <img src={image.src} alt="" key={image.src} />)}
+            </div>
+            <div className="heroReelSet">
+              {reelImages.map((image) => <img src={image.src} alt="" key={`duplicate-${image.src}`} />)}
+            </div>
+          </div>
+        </div>
         <div className="heroScrim" aria-hidden="true" />
         <div className="heroCopy">
           <p className="eyebrow"><span>●</span> Kuala Lumpur · Available worldwide</p>
@@ -71,15 +73,14 @@ export default function Home() {
           <p>From concept development and art direction to production and retouching, every detail is shaped around your audience, your platform, and your story.</p>
         </div>
         <div className="serviceGrid">
-          {services.map((service, index) => (
+          {services.map((service) => (
             <article className="serviceCard" key={service.title}>
-              <div className="serviceImage">
-                <img src={service.image} alt="" />
-                <span>{String(index + 1).padStart(2, "0")}</span>
-              </div>
+              <a className="serviceImage" href={`/services/${service.slug}`} aria-label={`View the ${service.shortTitle} gallery`}>
+                <img src={service.cover} alt="" />
+              </a>
               <p>{service.tag}</p>
-              <h3>{service.title}</h3>
-              <a href="#contact" aria-label={`Ask about ${service.title}`}>Discuss this service <span>↗</span></a>
+              <h3><a href={`/services/${service.slug}`}>{service.shortTitle}</a></h3>
+              <a href={`/services/${service.slug}`} aria-label={`View the ${service.shortTitle} gallery`}>View full gallery <span>↗</span></a>
             </article>
           ))}
         </div>
@@ -113,8 +114,10 @@ export default function Home() {
         </div>
       </section>
 
-      <footer>
-        <a className="brand" href="#top">GABYTRON<span>●</span></a>
+      <footer id="site-footer">
+        <a className="brand originalBrand footerBrand" href="#top" aria-label="Gabytron Productions home">
+          <img src="/media/logo.png" alt="Gabytron Productions" />
+        </a>
         <p>Photo · Film · Creative Direction</p>
         <p>© 2026 Gabytron Productions · SSM 003222809-H</p>
       </footer>

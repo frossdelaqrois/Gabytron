@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Anton, Manrope } from "next/font/google";
+import { PhotoEditor } from "./components/PhotoEditor";
+import { galleryFiles, services } from "./services-data";
 import "./globals.css";
 
 const display = Anton({ variable: "--font-display", weight: "400", subsets: ["latin"] });
@@ -17,6 +19,20 @@ export const metadata: Metadata = {
   twitter: { card: "summary_large_image", images: ["/og.png"] },
 };
 
+const editorAssets = Array.from(new Set([
+  "/media/hero.webp",
+  "/media/about-1.webp",
+  "/media/about-2.webp",
+  ...services.map((service) => service.cover),
+  ...services.flatMap((service) => galleryFiles(service, "image")),
+  ...services.flatMap((service) => service.animations || []),
+  "/featured/emillio/portrait.jpg",
+  "/featured/emillio/work-1.jpg",
+  "/featured/emillio/work-2.jpg",
+  "/featured/emillio/work-3.jpg",
+  "/featured/emillio/work-4.jpg",
+]));
+
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="en"><body className={`${display.variable} ${body.variable}`}>{children}</body></html>;
+  return <html lang="en"><body className={`${display.variable} ${body.variable}`}>{children}<PhotoEditor assets={editorAssets} /></body></html>;
 }
