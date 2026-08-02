@@ -5,17 +5,22 @@ import { useEffect, useMemo, useRef, useState } from "react";
 const STORAGE_KEY = "gabytron-photo-replacements-v1";
 const LAYOUT_STORAGE_KEY = "gabytron-photo-layouts-v1";
 const TEXT_STORAGE_KEY = "gabytron-text-content-v1";
+const UNDO_STORAGE_KEY = "gabytron-editor-undo-v1";
+const REOPEN_EDITOR_KEY = "gabytron-editor-reopen";
 const UPLOAD_DB = "gabytron-photo-editor";
 const UPLOAD_STORE = "uploads";
 
 type ReplacementMap = Record<string, string>;
 type TextMap = Record<string, string>;
+type EditorSnapshot = { layouts: LayoutMap; texts: TextMap; replacements: ReplacementMap };
 type EditorKind = "photo" | "background" | "text" | "section" | "header" | "box";
-type PhotoLayout = { x: number; y: number; scale: number; paddingTop?: number; paddingBottom?: number; height?: number };
+type PhotoLayout = { x: number; y: number; scale: number; widthScale?: number; heightScale?: number; fontSize?: number; paddingTop?: number; paddingBottom?: number; height?: number };
 type LayoutMap = Record<string, PhotoLayout>;
 type StoredUpload = { id: string; name: string; type: string; blob: Blob };
 type UploadAsset = StoredUpload & { key: string; src: string };
 type EditorAsset = { key: string; src: string; group: string; label: string };
+type SelectionRect = { top: number; left: number; width: number; height: number };
+type ResizeDirection = "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw";
 
 function readReplacements(): ReplacementMap {
   try {
@@ -41,6 +46,18 @@ function readTexts(): TextMap {
   } catch {
     return {};
   }
+}
+
+function readUndoHistory(): EditorSnapshot[] {
+  try {
+    return JSON.parse(window.sessionStorage.getItem(UNDO_STORAGE_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function currentEditorSnapshot(): EditorSnapshot {
+  return { layouts: readLayouts(), texts: readTexts(), replacements: readReplacements() };
 }
 
 function cleanEditableHtml(element: HTMLElement) {
@@ -74,6 +91,9 @@ function clampLayout(layout: PhotoLayout): PhotoLayout {
     x: Math.max(-1000, Math.min(1000, Math.round(layout.x))),
     y: Math.max(-1000, Math.min(1000, Math.round(layout.y))),
     scale: Math.max(0.35, Math.min(2.5, Math.round(layout.scale * 100) / 100)),
+    ...(layout.widthScale === undefined ? {} : { widthScale: Math.max(0.35, Math.min(2.5, Math.round(layout.widthScale * 100) / 100)) }),
+    ...(layout.heightScale === undefined ? {} : { heightScale: Math.max(0.35, Math.min(2.5, Math.round(layout.heightScale * 100) / 100)) }),
+    ...(layout.fontSize === undefined ? {} : { fontSize: Math.max(8, Math.min(240, Math.round(layout.fontSize))) }),
     ...(layout.paddingTop === undefined ? {} : { paddingTop: Math.max(0, Math.min(400, Math.round(layout.paddingTop))) }),
     ...(layout.paddingBottom === undefined ? {} : { paddingBottom: Math.max(0, Math.min(400, Math.round(layout.paddingBottom))) }),
     ...(layout.height === undefined ? {} : { height: Math.max(360, Math.min(1400, Math.round(layout.height))) }),
@@ -85,11 +105,17 @@ function applyLayout(element: HTMLElement, layout: PhotoLayout) {
   element.style.setProperty("--photo-editor-x", `${layout.x}px`);
   element.style.setProperty("--photo-editor-y", `${layout.y}px`);
   element.style.setProperty("--photo-editor-scale", `${layout.scale}`);
+  element.style.setProperty("--photo-editor-width-scale", `${layout.widthScale || 1}`);
+  element.style.setProperty("--photo-editor-height-scale", `${layout.heightScale || 1}`);
   if (element.dataset.photoEditorKind === "section") {
     if (layout.paddingTop === undefined) element.style.removeProperty("padding-top");
     else element.style.paddingTop = `${layout.paddingTop}px`;
     if (layout.paddingBottom === undefined) element.style.removeProperty("padding-bottom");
     else element.style.paddingBottom = `${layout.paddingBottom}px`;
+  }
+  if (element.dataset.photoEditorKind === "text") {
+    if (layout.fontSize === undefined) element.style.removeProperty("font-size");
+    else element.style.fontSize = `${layout.fontSize}px`;
   }
   if (element.dataset.photoEditorKind === "header") {
     if (layout.height === undefined) {
@@ -107,6 +133,11 @@ function layoutForElement(element: HTMLElement): PhotoLayout {
     x: Number.parseFloat(element.style.getPropertyValue("--photo-editor-x")) || 0,
     y: Number.parseFloat(element.style.getPropertyValue("--photo-editor-y")) || 0,
     scale: Number.parseFloat(element.style.getPropertyValue("--photo-editor-scale")) || 1,
+    widthScale: Number.parseFloat(element.style.getPropertyValue("--photo-editor-width-scale")) || 1,
+    heightScale: Number.parseFloat(element.style.getPropertyValue("--photo-editor-height-scale")) || 1,
+    ...(element.dataset.photoEditorKind === "text" ? {
+      fontSize: Number.parseFloat(element.style.fontSize) || Number.parseFloat(window.getComputedStyle(element).fontSize) || 16,
+    } : {}),
     ...(element.dataset.photoEditorKind === "section" ? {
       paddingTop: Number.parseFloat(element.style.paddingTop) || Number.parseFloat(window.getComputedStyle(element).paddingTop) || 0,
       paddingBottom: Number.parseFloat(element.style.paddingBottom) || Number.parseFloat(window.getComputedStyle(element).paddingBottom) || 0,
@@ -217,16 +248,17 @@ function assetLabel(src: string) {
 }
 
 function isEditableText(element: Element) {
-  const text = element.closest<HTMLElement>("h1,h2,h3,p");
+  const text = element.closest<HTMLElement>("h1,h2,h3,p,.roundel,.artistPortrait>span");
   if (!text || text.closest("[data-photo-editor-ui],nav,footer")) return null;
   return text;
 }
 
 function prepareLayoutTarget(element: HTMLElement, kind: "text" | "section" | "header" | "box") {
   if (!element.dataset.photoEditorKey) {
-    const selector = kind === "text" ? "h1,h2,h3,p" : kind === "header" ? ".hero,.galleryHero" : kind === "box" ? ".serviceCard,.aboutImageFrame" : "main section:not(.hero):not(.galleryHero)";
+    const specialText = kind === "text" && element.matches(".roundel,.artistPortrait>span");
+    const selector = kind === "text" ? (specialText ? ".roundel,.artistPortrait>span" : "h1,h2,h3,p") : kind === "header" ? ".hero,.galleryHero" : kind === "box" ? ".serviceCard,.aboutImageFrame" : "main section:not(.hero):not(.galleryHero)";
     const targets = Array.from(document.querySelectorAll<HTMLElement>(selector)).filter((target) => !target.closest("[data-photo-editor-ui],nav,footer"));
-    element.dataset.photoEditorKey = `${window.location.pathname}::${kind}-${targets.indexOf(element)}::${element.tagName.toLowerCase()}`;
+    element.dataset.photoEditorKey = `${window.location.pathname}::${specialText ? "text-label" : kind}-${targets.indexOf(element)}::${element.tagName.toLowerCase()}`;
   }
   element.dataset.photoEditorKind = kind;
   if (kind === "text" && !element.isContentEditable) {
@@ -247,12 +279,15 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
   const [selectedKind, setSelectedKind] = useState<EditorKind>("photo");
   const [selectedLayout, setSelectedLayout] = useState<PhotoLayout>(DEFAULT_LAYOUT);
   const [editingText, setEditingText] = useState(false);
+  const [selectionRect, setSelectionRect] = useState<SelectionRect | null>(null);
+  const [undoCount, setUndoCount] = useState(0);
   const [notice, setNotice] = useState("");
   const [uploads, setUploads] = useState<UploadAsset[]>([]);
   const targetRef = useRef<HTMLImageElement | null>(null);
   const backgroundTargetRef = useRef<HTMLElement | null>(null);
   const layoutTargetRef = useRef<HTMLElement | null>(null);
   const dragRef = useRef<{ key: string; target: HTMLElement; startX: number; startY: number; initial: PhotoLayout } | null>(null);
+  const resizeDragRef = useRef<{ key: string; target: HTMLElement; direction: ResizeDirection; startX: number; startY: number; initial: PhotoLayout; rect: DOMRect } | null>(null);
   const localUrlsRef = useRef(new Map<string, string>());
 
   const editorAssets = useMemo<EditorAsset[]>(() => [
@@ -268,17 +303,49 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
     });
   }, [editorAssets, group, query]);
 
+  const recordHistory = () => {
+    const history = readUndoHistory();
+    const snapshot = currentEditorSnapshot();
+    const serialized = JSON.stringify(snapshot);
+    if (history.length === 0 || JSON.stringify(history[history.length - 1]) !== serialized) {
+      history.push(snapshot);
+      if (history.length > 50) history.shift();
+      window.sessionStorage.setItem(UNDO_STORAGE_KEY, JSON.stringify(history));
+      setUndoCount(history.length);
+    }
+  };
+
+  const undoLastEdit = () => {
+    const history = readUndoHistory();
+    const snapshot = history.pop();
+    if (!snapshot) {
+      setNotice("Nothing to undo yet.");
+      return;
+    }
+    window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(snapshot.layouts));
+    window.localStorage.setItem(TEXT_STORAGE_KEY, JSON.stringify(snapshot.texts));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot.replacements));
+    window.sessionStorage.setItem(UNDO_STORAGE_KEY, JSON.stringify(history));
+    window.sessionStorage.setItem(REOPEN_EDITOR_KEY, "true");
+    window.location.reload();
+  };
+
   useEffect(() => {
     const local = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
     setAvailable(local);
     if (!local) return;
+    setUndoCount(readUndoHistory().length);
+    if (window.sessionStorage.getItem(REOPEN_EDITOR_KEY) === "true") {
+      window.sessionStorage.removeItem(REOPEN_EDITOR_KEY);
+      setEnabled(true);
+    }
 
     let stopped = false;
     const applySavedPhotos = () => {
       const replacements = readReplacements();
       document.querySelectorAll<HTMLImageElement>("img").forEach((image) => preparePhoto(image, replacements, localUrlsRef.current));
       document.querySelectorAll<HTMLElement>("[data-photo-editor-background]").forEach((element) => prepareBackground(element, replacements, localUrlsRef.current));
-      document.querySelectorAll<HTMLElement>("h1,h2,h3,p").forEach((element) => {
+      document.querySelectorAll<HTMLElement>("h1,h2,h3,p,.roundel,.artistPortrait>span").forEach((element) => {
         if (!element.closest("[data-photo-editor-ui],nav,footer")) prepareLayoutTarget(element, "text");
       });
       document.querySelectorAll<HTMLElement>("main section:not(.hero):not(.galleryHero)").forEach((element) => prepareLayoutTarget(element, "section"));
@@ -356,7 +423,8 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
         layoutTargetRef.current = layoutElement;
         const key = layoutElement.dataset.photoEditorKey || "";
         const saved = readLayouts()[key];
-        const layout = saved ? clampLayout(saved) : layoutForElement(layoutElement);
+        const measured = layoutForElement(layoutElement);
+        const layout = saved ? clampLayout({ ...measured, ...saved }) : measured;
         layoutElement.dataset.photoEditorSelected = "true";
         setSelectedKey(key);
         setSelectedKind(layoutKind);
@@ -419,6 +487,7 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
       );
       if (!selected?.key) return;
       if (section) return;
+      recordHistory();
       dragRef.current = {
         key: selected.key,
         target: selected.target,
@@ -478,6 +547,90 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
   }, [enabled]);
 
   useEffect(() => {
+    if (!enabled || !selectedKey || open) {
+      setSelectionRect(null);
+      return;
+    }
+    const target = layoutTargetRef.current;
+    if (!target) return;
+    const updateSelectionRect = () => {
+      const rect = target.getBoundingClientRect();
+      setSelectionRect({ top: rect.top, left: rect.left, width: rect.width, height: rect.height });
+    };
+    const frame = window.requestAnimationFrame(updateSelectionRect);
+    const observer = new ResizeObserver(updateSelectionRect);
+    observer.observe(target);
+    window.addEventListener("scroll", updateSelectionRect, true);
+    window.addEventListener("resize", updateSelectionRect);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener("scroll", updateSelectionRect, true);
+      window.removeEventListener("resize", updateSelectionRect);
+    };
+  }, [enabled, open, selectedKey, selectedLayout]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const handleResizeMove = (event: PointerEvent) => {
+      const resize = resizeDragRef.current;
+      if (!resize) return;
+      event.preventDefault();
+      const deltaX = event.clientX - resize.startX;
+      const deltaY = event.clientY - resize.startY;
+      let next: PhotoLayout;
+
+      if (resize.target.dataset.photoEditorKind === "header") {
+        const verticalDelta = resize.direction.includes("n") ? -deltaY : deltaY;
+        next = clampLayout({ ...resize.initial, height: (resize.initial.height || resize.rect.height) + verticalDelta });
+      } else if (resize.direction === "e" || resize.direction === "w") {
+        const horizontalDelta = resize.direction === "w" ? -deltaX : deltaX;
+        next = clampLayout({
+          ...resize.initial,
+          widthScale: (resize.initial.widthScale || 1) * (1 + horizontalDelta / Math.max(1, resize.rect.width)),
+        });
+      } else if (resize.direction === "n" || resize.direction === "s") {
+        const verticalDelta = resize.direction === "n" ? -deltaY : deltaY;
+        next = clampLayout({
+          ...resize.initial,
+          heightScale: (resize.initial.heightScale || 1) * (1 + verticalDelta / Math.max(1, resize.rect.height)),
+        });
+      } else {
+        const changes: number[] = [];
+        if (resize.direction.includes("e")) changes.push(deltaX / Math.max(1, resize.rect.width));
+        if (resize.direction.includes("w")) changes.push(-deltaX / Math.max(1, resize.rect.width));
+        if (resize.direction.includes("s")) changes.push(deltaY / Math.max(1, resize.rect.height));
+        if (resize.direction.includes("n")) changes.push(-deltaY / Math.max(1, resize.rect.height));
+        const scaleChange = changes.reduce((sum, value) => sum + value, 0) / Math.max(1, changes.length);
+        next = clampLayout({ ...resize.initial, scale: resize.initial.scale * (1 + scaleChange) });
+      }
+
+      applyLayout(resize.target, next);
+      setSelectedLayout(next);
+    };
+
+    const finishResize = () => {
+      const resize = resizeDragRef.current;
+      if (!resize) return;
+      const layouts = readLayouts();
+      layouts[resize.key] = layoutForElement(resize.target);
+      window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layouts));
+      resizeDragRef.current = null;
+      document.body.classList.remove("photoEditorDragging");
+      setNotice("Mouse resize saved on this computer.");
+    };
+
+    window.addEventListener("pointermove", handleResizeMove, true);
+    window.addEventListener("pointerup", finishResize, true);
+    window.addEventListener("pointercancel", finishResize, true);
+    return () => {
+      window.removeEventListener("pointermove", handleResizeMove, true);
+      window.removeEventListener("pointerup", finishResize, true);
+      window.removeEventListener("pointercancel", finishResize, true);
+    };
+  }, [enabled]);
+
+  useEffect(() => {
     if (!open) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpen(false);
@@ -503,17 +656,19 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
   const resetSelectedLayout = () => {
     const target = layoutTargetRef.current;
     if (!target || !selectedKey) return;
+    recordHistory();
     const layouts = readLayouts();
     delete layouts[selectedKey];
     window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layouts));
     applyLayout(target, DEFAULT_LAYOUT);
-    setSelectedLayout(selectedKind === "section" || selectedKind === "header" ? layoutForElement(target) : DEFAULT_LAYOUT);
+    setSelectedLayout(selectedKind === "section" || selectedKind === "header" || selectedKind === "text" ? layoutForElement(target) : DEFAULT_LAYOUT);
     setNotice(selectedKind === "section" ? "Original section spacing restored." : selectedKind === "header" ? "Original header height restored." : "Original size and position restored.");
   };
 
   const beginTextEditing = () => {
     const target = layoutTargetRef.current;
     if (!target || selectedKind !== "text") return;
+    recordHistory();
     target.contentEditable = "true";
     target.spellcheck = true;
     target.focus();
@@ -538,6 +693,52 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
       setEditingText(false);
     }
     setNotice("Selected changes saved on this computer.");
+  };
+
+  const exportEditorChanges = () => {
+    const replacements = readReplacements();
+    const localUploadReferences = Object.entries(replacements)
+      .filter(([, source]) => source.startsWith("local-upload:"))
+      .map(([key]) => key);
+    const exportData = {
+      version: 1,
+      site: "Gabytron Productions",
+      exportedAt: new Date().toISOString(),
+      layouts: readLayouts(),
+      texts: readTexts(),
+      replacements,
+      localUploadReferences,
+    };
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `gabytron-editor-changes-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setNotice(localUploadReferences.length > 0
+      ? "Edits exported. Attach the JSON and any newly uploaded photos here."
+      : "Edits exported. Attach the JSON file here so it can be published.");
+  };
+
+  const startMouseResize = (event: React.PointerEvent<HTMLButtonElement>, direction: ResizeDirection) => {
+    const target = layoutTargetRef.current;
+    if (!target || !selectedKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    recordHistory();
+    resizeDragRef.current = {
+      key: selectedKey,
+      target,
+      direction,
+      startX: event.clientX,
+      startY: event.clientY,
+      initial: readLayouts()[selectedKey] ? layoutFor(selectedKey) : layoutForElement(target),
+      rect: target.getBoundingClientRect(),
+    };
+    document.body.classList.add("photoEditorDragging");
   };
 
   const selectRelatedBox = () => {
@@ -577,6 +778,7 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
     const target = targetRef.current;
     const background = backgroundTargetRef.current;
     if ((!target && !background) || !selectedKey) return;
+    recordHistory();
     const replacements = readReplacements();
     replacements[selectedKey] = asset.key;
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(replacements));
@@ -589,6 +791,7 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
     const target = targetRef.current;
     const background = backgroundTargetRef.current;
     if ((!target && !background) || !selectedKey) return;
+    recordHistory();
     const replacements = readReplacements();
     delete replacements[selectedKey];
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(replacements));
@@ -628,6 +831,7 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
         type="button"
         aria-pressed={enabled}
         onClick={() => {
+          if (!enabled && readUndoHistory().length === 0) recordHistory();
           setEnabled((value) => {
             if (value) {
               setSelectedKey("");
@@ -650,6 +854,32 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
       </button>
 
       {enabled && <p className="photoEditorHint">Click a header to resize · drag photos or text · Shift-click other sections</p>}
+      {enabled && (
+        <button type="button" className="photoEditorUndo" onClick={undoLastEdit} disabled={undoCount === 0}>
+          Undo{undoCount > 0 ? ` (${undoCount})` : ""}
+        </button>
+      )}
+      {enabled && <button type="button" className="photoEditorExport" onClick={exportEditorChanges}>Export edits ↓</button>}
+
+      {enabled && selectionRect && selectedKind !== "section" && !open && (
+        <div
+          className={`visualSelectionBox ${selectedKind === "header" ? "headerSelectionBox" : ""}`}
+          style={{ top: selectionRect.top, left: selectionRect.left, width: selectionRect.width, height: selectionRect.height }}
+          aria-hidden="true"
+        >
+          {(selectedKind === "header" ? ["n", "s"] : ["n", "ne", "e", "se", "s", "sw", "w", "nw"]).map((direction) => (
+            <button
+              type="button"
+              className="visualResizeHandle"
+              data-direction={direction}
+              key={direction}
+              tabIndex={-1}
+              aria-label={`Resize from ${direction}`}
+              onPointerDown={(event) => startMouseResize(event, direction as ResizeDirection)}
+            />
+          ))}
+        </div>
+      )}
 
       {enabled && selectedKey && !open && (
         <aside className={`photoLayoutBar ${selectedKind === "section" || selectedKind === "header" ? "sectionControls" : ""}`} aria-label="Selected item layout controls">
@@ -660,10 +890,10 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
           {selectedKind !== "section" && selectedKind !== "header" ? (
             <>
               <div className="photoLayoutNudge" aria-label="Move selected item">
-                <button type="button" onClick={() => updateSelectedLayout({ ...selectedLayout, y: selectedLayout.y - 10 })} aria-label="Move up">↑</button>
-                <button type="button" onClick={() => updateSelectedLayout({ ...selectedLayout, x: selectedLayout.x - 10 })} aria-label="Move left">←</button>
-                <button type="button" onClick={() => updateSelectedLayout({ ...selectedLayout, y: selectedLayout.y + 10 })} aria-label="Move down">↓</button>
-                <button type="button" onClick={() => updateSelectedLayout({ ...selectedLayout, x: selectedLayout.x + 10 })} aria-label="Move right">→</button>
+                <button type="button" onPointerDown={recordHistory} onClick={() => updateSelectedLayout({ ...selectedLayout, y: selectedLayout.y - 10 })} aria-label="Move up">↑</button>
+                <button type="button" onPointerDown={recordHistory} onClick={() => updateSelectedLayout({ ...selectedLayout, x: selectedLayout.x - 10 })} aria-label="Move left">←</button>
+                <button type="button" onPointerDown={recordHistory} onClick={() => updateSelectedLayout({ ...selectedLayout, y: selectedLayout.y + 10 })} aria-label="Move down">↓</button>
+                <button type="button" onPointerDown={recordHistory} onClick={() => updateSelectedLayout({ ...selectedLayout, x: selectedLayout.x + 10 })} aria-label="Move right">→</button>
               </div>
               <label className="photoLayoutScale">
                 <span>Resize</span>
@@ -673,6 +903,8 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
                   max="250"
                   step="1"
                   value={Math.round(selectedLayout.scale * 100)}
+                  onPointerDown={recordHistory}
+                  onKeyDown={recordHistory}
                   onChange={(event) => updateSelectedLayout({ ...selectedLayout, scale: Number(event.target.value) / 100 })}
                 />
               </label>
@@ -681,20 +913,35 @@ export function PhotoEditor({ assets }: { assets: string[] }) {
             <div className="sectionSpacingControls">
               <label>
                 <span>Space above · {Math.round(selectedLayout.paddingTop || 0)}px</span>
-                <input type="range" min="0" max="400" value={Math.round(selectedLayout.paddingTop || 0)} onChange={(event) => updateSelectedLayout({ ...selectedLayout, paddingTop: Number(event.target.value) })} />
+                <input type="range" min="0" max="400" value={Math.round(selectedLayout.paddingTop || 0)} onPointerDown={recordHistory} onKeyDown={recordHistory} onChange={(event) => updateSelectedLayout({ ...selectedLayout, paddingTop: Number(event.target.value) })} />
               </label>
               <label>
                 <span>Space below · {Math.round(selectedLayout.paddingBottom || 0)}px</span>
-                <input type="range" min="0" max="400" value={Math.round(selectedLayout.paddingBottom || 0)} onChange={(event) => updateSelectedLayout({ ...selectedLayout, paddingBottom: Number(event.target.value) })} />
+                <input type="range" min="0" max="400" value={Math.round(selectedLayout.paddingBottom || 0)} onPointerDown={recordHistory} onKeyDown={recordHistory} onChange={(event) => updateSelectedLayout({ ...selectedLayout, paddingBottom: Number(event.target.value) })} />
               </label>
             </div>
           ) : (
             <div className="sectionSpacingControls headerHeightControl">
               <label>
                 <span>Header height · {Math.round(selectedLayout.height || 0)}px</span>
-                <input type="range" min="360" max="1400" value={Math.round(selectedLayout.height || 720)} onChange={(event) => updateSelectedLayout({ ...selectedLayout, height: Number(event.target.value) })} />
+                <input type="range" min="360" max="1400" value={Math.round(selectedLayout.height || 720)} onPointerDown={recordHistory} onKeyDown={recordHistory} onChange={(event) => updateSelectedLayout({ ...selectedLayout, height: Number(event.target.value) })} />
               </label>
             </div>
+          )}
+          {selectedKind === "text" && (
+            <label className="photoLayoutScale textFontSizeControl">
+              <span>Font · {Math.round(selectedLayout.fontSize || 16)}px</span>
+              <input
+                type="range"
+                min="8"
+                max="240"
+                step="1"
+                value={Math.round(selectedLayout.fontSize || 16)}
+                onPointerDown={recordHistory}
+                onKeyDown={recordHistory}
+                onChange={(event) => updateSelectedLayout({ ...selectedLayout, fontSize: Number(event.target.value) })}
+              />
+            </label>
           )}
           {selectedKind === "text" && <button type="button" className="photoLayoutChange" onClick={beginTextEditing}>{editingText ? "Editing text…" : "Edit text"}</button>}
           {selectedKind === "photo" && targetRef.current?.closest(".serviceCard,.aboutImageFrame") && <button type="button" className="photoLayoutChange" onClick={selectRelatedBox}>Resize box</button>}
